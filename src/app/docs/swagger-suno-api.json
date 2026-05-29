@@ -35,8 +35,8 @@
                   },
                   "model": {
                     "type": "string",
-                    "description": "Model name ,default is chirp-v3-5",
-                    "example": "chirp-v3-5|chirp-v3-0"
+                    "description": "Suno model `external_key`. Default `chirp-v3-5`. Free: `chirp-v3-5`, `chirp-v3-0`, `chirp-v2-xxl-alpha`. PRO: `chirp-v4`, `chirp-auk` (v4.5). Available models depend on the account; see GET /api/session/ `models[].can_use`.",
+                    "example": "chirp-v3-5"
                   },
                   "wait_audio": {
                     "type": "boolean",
@@ -155,8 +155,8 @@
                   },
                   "model": {
                     "type": "string",
-                    "description": "Model name ,default is chirp-v3-5",
-                    "example": "chirp-v3-5|chirp-v3-0"
+                    "description": "Suno model `external_key`. Default `chirp-v3-5`. Free: `chirp-v3-5`, `chirp-v3-0`, `chirp-v2-xxl-alpha`. PRO: `chirp-v4`, `chirp-auk` (v4.5). Available models depend on the account; see GET /api/session/ `models[].can_use`.",
+                    "example": "chirp-v3-5"
                   },
                   "wait_audio": {
                     "type": "boolean",
@@ -238,8 +238,8 @@
                   },
                   "model": {
                     "type": "string",
-                    "description": "Model name ,default is chirp-v3-5",
-                    "example": "chirp-v3-5|chirp-v3-0"
+                    "description": "Suno model `external_key`. Default `chirp-v3-5`. Free: `chirp-v3-5`, `chirp-v3-0`, `chirp-v2-xxl-alpha`. PRO: `chirp-v4`, `chirp-auk` (v4.5). Available models depend on the account; see GET /api/session/ `models[].can_use`.",
+                    "example": "chirp-v3-5"
                   }
                 }
               }

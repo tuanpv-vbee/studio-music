@@ -1,16 +1,16 @@
 import { NextResponse, NextRequest } from "next/server";
 import { DEFAULT_MODEL, sunoApi } from "@/lib/SunoApi";
 import { corsHeaders } from "@/lib/utils";
+import { corsJson, corsOptions } from "@/lib/apiResponse";
 
 export const dynamic = "force-dynamic";
 
 /**
- * desc
- *
+ * OpenAI chat-completions-shaped endpoint. Maps the last `user` message to a
+ * generate() call and returns the result as Markdown.
  */
 export async function POST(req: NextRequest) {
   try {
-
     const body = await req.json();
 
     let userMessage = null;
@@ -22,15 +22,8 @@ export async function POST(req: NextRequest) {
     }
 
     if (!userMessage) {
-      return new NextResponse(JSON.stringify({ error: 'Prompt message is required' }), {
-        status: 400,
-        headers: {
-          'Content-Type': 'application/json',
-          ...corsHeaders
-        }
-      });
+      return corsJson({ error: 'Prompt message is required' }, 400);
     }
-
 
     const audioInfo = await (await sunoApi()).generate(userMessage.content, true, DEFAULT_MODEL, true);
 
@@ -43,19 +36,10 @@ export async function POST(req: NextRequest) {
     });
   } catch (error: any) {
     console.error('Error generating audio:', JSON.stringify(error.response.data));
-    return new NextResponse(JSON.stringify({ error: 'Internal server error: ' + JSON.stringify(error.response.data.detail) }), {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        ...corsHeaders
-      }
-    });
+    return corsJson({ error: 'Internal server error: ' + JSON.stringify(error.response.data.detail) }, 500);
   }
 }
 
-export async function OPTIONS(request: Request) {
-  return new Response(null, {
-    status: 200,
-    headers: corsHeaders
-  });
+export async function OPTIONS() {
+  return corsOptions();
 }

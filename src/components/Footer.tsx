@@ -1,7 +1,11 @@
+"use client";
 import Link from "next/link";
 import Image from "next/image";
+import { usePathname } from "next/navigation";
 
 export default function Footer() {
+    const pathname = usePathname();
+    if (pathname?.startsWith("/create")) return null;
     return (
         <footer className=" flex w-full justify-center py-4 items-center
         bg-indigo-900 text-white/60 backdrop-blur-2xl font-mono text-sm px-4 lg:px-0
