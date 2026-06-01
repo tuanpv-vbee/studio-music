@@ -5,9 +5,7 @@ import { usePathname } from "next/navigation";
 
 // Suno-style left navigation. Icons inline as SVGs to avoid extra deps.
 const NAV = [
-  { href: "/create", label: "Create", icon: IconCreate },
-  { href: "/", label: "Home", icon: IconHome },
-  { href: "/docs", label: "API Docs", icon: IconDocs }
+  { href: "/create", label: "Create", icon: IconCreate }
 ];
 
 export default function Sidebar() {
@@ -67,19 +65,3 @@ function IconCreate({ className = "" }: { className?: string }) {
   );
 }
 
-function IconHome({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-      <path d="M3 11l9-8 9 8M5 10v10h14V10" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function IconDocs({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
-      <path d="M6 3h9l5 5v13H6z" strokeLinejoin="round" />
-      <path d="M14 3v6h6M9 13h6M9 17h6" strokeLinecap="round" />
-    </svg>
-  );
-}

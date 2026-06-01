@@ -1,5 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Home → Create: opening "/" lands straight on the workspace/create page.
+  async redirects() {
+    return [{ source: '/', destination: '/create', permanent: false }];
+  },
   webpack: (config) => {
     config.module.rules.push({
       test: /\.(ttf|html)$/i,
