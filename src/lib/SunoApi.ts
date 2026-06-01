@@ -36,6 +36,10 @@ export interface AudioInfo {
   negative_tags?: string; // Negative tags of music.
   duration?: string; // Duration of the audio
   error_message?: string; // Error message if any
+  image_large_url?: string; // URL of the large cover image
+  play_count?: number; // Number of plays
+  upvote_count?: number; // Number of upvotes
+  is_liked?: boolean; // Whether the current user liked the clip
 }
 
 interface PersonaResponse {
@@ -224,19 +228,281 @@ class SunoApi {
   }
 
   /**
-   * Get the session token (not to be confused with session ID) and save it for later use.
+   * UI-driven generation: opens suno.com/create in a real browser, fills the
+   * create form, clicks the Create button, and intercepts the response of
+   * /api/generate/v2-web/ that Suno's own React app issues.
+   *
+   * Branches on `payload.metadata.create_mode`:
+   *  - 'simple' → fills the "Song Description" textarea (gpt_description_prompt).
+   *  - 'custom' → switches to the Custom tab and fills Lyrics (`prompt`),
+   *    Styles (`tags`) and Title (`title`). Crucially the lyrics go into the
+   *    dedicated lyrics field; typing them into the Simple description box makes
+   *    Suno invent a different song instead of singing them.
+   *
+   * Why drive the UI at all: programmatic fetch() calls — even from inside a
+   * Playwright page — still fail with token_validation_failed. Suno's anti-bot
+   * looks for additional client-side state (mouse trail, focus, React form
+   * state, a HMAC we don't see). The only reliable path is to let Suno's own
+   * JavaScript build and send the request and we just sniff the response.
    */
-  private async getSessionToken() {
-    const tokenResponse = await this.client.post(
-      `${SunoApi.BASE_URL}/api/user/create_session_id/`,
-      {
-        session_properties: JSON.stringify({ deviceId: this.deviceId }),
-        session_type: 1
-      }
-    );
-    return tokenResponse.data.session_id;
-  }
+  private async generateViaBrowser(payload: any): Promise<any> {
+    // Playwright/Chromium can't run on Vercel (and similar serverless) — fail
+    // with a clear message instead of an opaque "browser not found" crash.
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      throw new Error(
+        'Browser-driven generate is unavailable on serverless (Vercel). ' +
+          'Set SUNO_TURNSTILE_TOKEN + SUNO_CREATE_SESSION_TOKEN to use the direct API path.'
+      );
+    }
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage']
+    });
+    const debugDir = '/tmp/suno-debug';
+    let page: any;
+    try {
+      const context = await browser.newContext({
+        userAgent: SunoApi.USER_AGENT,
+        viewport: { width: 1440, height: 900 }
+      });
 
+      const cookiesList = Object.entries(this.cookies)
+        .filter((pair): pair is [string, string] => pair[1] !== undefined)
+        .map(([name, value]) => ({
+          name,
+          value,
+          domain: '.suno.com',
+          path: '/',
+          sameSite: 'Lax' as const
+        }));
+      await context.addCookies(cookiesList);
+
+      page = await context.newPage();
+      await page.goto('https://suno.com/create', {
+        waitUntil: 'domcontentloaded',
+        timeout: 30_000
+      });
+      logger.info('Loaded suno.com/create');
+
+      const isCustom = payload?.metadata?.create_mode === 'custom';
+      // The field used for the post-typing diagnostics / "never enabled" message.
+      let primaryField: any;
+
+      if (isCustom) {
+        // --- Custom mode: drive Lyrics + Styles + Title. ---
+        // Feeding lyrics into the Simple "Song Description" box makes Suno treat
+        // them as a *description* and invent a different song, so switch to the
+        // Custom form and fill the real fields instead.
+        const customTab = page
+          .getByRole('button', { name: /^custom$/i })
+          .first();
+        if (await customTab.isVisible({ timeout: 5_000 }).catch(() => false)) {
+          await customTab.click().catch(() => {});
+          logger.info('Clicked Custom mode tab');
+        }
+
+        const lyrics = String(payload?.prompt ?? '');
+        const styles = String(payload?.tags ?? '');
+        const title = String(payload?.title ?? '');
+
+        // Lyrics → the dedicated lyrics textarea (data-testid="lyrics-textarea").
+        if (lyrics.trim()) {
+          const lyricsBox = page
+            .locator('textarea[data-testid="lyrics-textarea"]')
+            .first();
+          await lyricsBox.waitFor({ state: 'visible', timeout: 15_000 });
+          await lyricsBox.click();
+          // pressSequentially fires React onChange; .fill() leaves Create disabled.
+          await lyricsBox.pressSequentially(lyrics, { delay: 5 });
+          const got = await lyricsBox.inputValue().catch(() => '');
+          if (got.trim().length === 0) {
+            throw new Error(
+              'Lyrics did not register in the Custom lyrics textarea — Suno UI may have changed.'
+            );
+          }
+          primaryField = lyricsBox;
+        }
+
+        // Styles → the maxlength=1000 textarea.
+        const stylesBox = page
+          .locator('textarea[maxlength="1000"]:visible')
+          .first();
+        if (
+          styles.trim() &&
+          (await stylesBox.isVisible({ timeout: 5_000 }).catch(() => false))
+        ) {
+          await stylesBox.click();
+          await stylesBox.pressSequentially(styles, { delay: 10 });
+          primaryField = primaryField ?? stylesBox;
+        }
+
+        // Title → best-effort (optional). Suno's title is a plain <input>.
+        if (title.trim()) {
+          const titleBox = page
+            .locator('input[placeholder*="title" i]')
+            .first();
+          if (await titleBox.isVisible({ timeout: 3_000 }).catch(() => false)) {
+            await titleBox.click();
+            await titleBox.pressSequentially(title, { delay: 10 });
+          }
+        }
+
+        if (!primaryField) {
+          throw new Error(
+            'Custom generate needs lyrics or styles, but neither was provided.'
+          );
+        }
+      } else {
+        // --- Simple mode: the visible "Song Description" textarea. ---
+        const simpleTab = page
+          .getByRole('button', { name: /^simple$/i })
+          .first();
+        if (await simpleTab.isVisible({ timeout: 5_000 }).catch(() => false)) {
+          await simpleTab.click().catch(() => {});
+          logger.info('Clicked Simple mode tab');
+        }
+
+        // Song Description is the visible maxlength=3000 textarea. The page also
+        // renders (sometimes hidden) textareas for lyrics (maxlength 5000),
+        // styles (maxlength 1000) and an advanced "Describe the sound you want"
+        // field (maxlength 500); target the 3000 one so the prompt lands right.
+        let textarea = page
+          .locator('textarea[maxlength="3000"]:visible')
+          .first();
+        if (!(await textarea.isVisible({ timeout: 5_000 }).catch(() => false))) {
+          textarea = page
+            .locator(
+              'textarea:visible:not([data-testid="lyrics-textarea"]):not([maxlength="1000"])'
+            )
+            .first();
+          await textarea.waitFor({ state: 'visible', timeout: 15_000 });
+        }
+
+        const promptText =
+          payload?.gpt_description_prompt || payload?.prompt || '';
+        if (!promptText) {
+          throw new Error(
+            'No prompt text in payload (gpt_description_prompt/prompt empty)'
+          );
+        }
+        logger.info(
+          { prompt: promptText.slice(0, 80) },
+          'Typing prompt into Suno UI'
+        );
+        await textarea.click();
+        // pressSequentially (not fill) — Suno's React onChange/onInput only fire
+        // on real keyboard input; .fill() leaves the Create button disabled.
+        await textarea.pressSequentially(promptText, { delay: 20 });
+
+        // Verify the value landed; otherwise Create never enables and a blind
+        // click would time out opaquely.
+        const typedValue = await textarea.inputValue().catch(() => '');
+        if (typedValue.trim() !== promptText.trim()) {
+          throw new Error(
+            `Prompt did not register in the Song Description field (got ${JSON.stringify(
+              typedValue.slice(0, 80)
+            )}). Suno's create UI likely changed — re-check the textarea selector.`
+          );
+        }
+        primaryField = textarea;
+      }
+
+      if (payload?.make_instrumental) {
+        const instrumental = page
+          .getByRole('switch', { name: /instrumental/i })
+          .first();
+        if (
+          await instrumental.isVisible({ timeout: 2_000 }).catch(() => false)
+        ) {
+          await instrumental.click().catch(() => {});
+        }
+      }
+
+      const genResponsePromise = page.waitForResponse(
+        (r: any) =>
+          r.url().includes('/api/generate/v2-web/') &&
+          r.request().method() === 'POST',
+        { timeout: 45_000 }
+      );
+
+      // The Create button has aria-label="Create song" (verified from DOM snapshot).
+      const createBtn = page
+        .locator('button[aria-label="Create song"]')
+        .first();
+      await createBtn.waitFor({ state: 'visible', timeout: 10_000 });
+      // Wait until it becomes enabled (Suno disables it until the form is valid).
+      // Don't swallow this: if it never enables, a blind .click() just blocks for
+      // the full action timeout and throws an opaque "Timeout exceeded" error.
+      const becameEnabled = await page
+        .waitForFunction(
+          () => {
+            const b = document.querySelector(
+              'button[aria-label="Create song"]'
+            ) as HTMLButtonElement | null;
+            return !!b && !b.disabled;
+          },
+          { timeout: 15_000 }
+        )
+        .then(() => true)
+        .catch(() => false);
+      if (!becameEnabled) {
+        const val = await primaryField.inputValue().catch(() => '');
+        throw new Error(
+          `Create button never became enabled (primary field = ${JSON.stringify(
+            val.slice(0, 80)
+          )}). The form is still invalid — Suno may require additional fields or the UI changed.`
+        );
+      }
+      logger.info('Clicking Create button...');
+      await createBtn.click();
+
+      const genResponse = await genResponsePromise;
+      const status = genResponse.status();
+      const text = await genResponse.text();
+      if (status < 200 || status >= 300) {
+        logger.error(
+          { status, body: text.slice(0, 500) },
+          'Suno UI generate response not OK'
+        );
+        let parsed: any;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = { raw: text };
+        }
+        const detail =
+          parsed?.detail ?? parsed?.error ?? JSON.stringify(parsed);
+        throw new Error(`generate failed (${status}): ${detail}`);
+      }
+      logger.info('generate/v2-web/ succeeded (UI-driven)');
+      return JSON.parse(text);
+    } catch (err) {
+      // Save a screenshot + DOM snapshot to help debugging headless UI mismatches
+      if (page) {
+        try {
+          const fs = await import('node:fs/promises');
+          await fs.mkdir(debugDir, { recursive: true });
+          const ts = Date.now();
+          await page.screenshot({
+            path: `${debugDir}/page-${ts}.png`,
+            fullPage: true
+          });
+          const html = await page.content();
+          await fs.writeFile(`${debugDir}/page-${ts}.html`, html);
+          logger.error({ debugDir, ts }, 'Saved debug screenshot + HTML');
+        } catch (snapErr) {
+          logger.error(
+            { err: String(snapErr) },
+            'Failed to save debug snapshot'
+          );
+        }
+      }
+      throw err;
+    } finally {
+      await browser.close();
+    }
+  }
 
   /**
    * Generate a song based on the prompt.
@@ -358,11 +624,8 @@ class SunoApi {
     continue_at?: number
   ): Promise<AudioInfo[]> {
     await this.keepAlive();
-    // Suno requires a fresh per-create_session_token (UUID) on every generate
-    // request. It's issued by POST /api/user/create_session_id/ and lives
-    // ~15min (`session_length`). Env override is supported for debugging.
-    const createSessionToken =
-      process.env.SUNO_CREATE_SESSION_TOKEN || (await this.getSessionToken());
+    // token (Turnstile P1_...) + token_provider + create_session_token are
+    // injected below from env (primary path) or by generateViaBrowser().
     const payload: any = {
       token: null,
       generation_type: 'TEXT',
@@ -375,10 +638,7 @@ class SunoApi {
         web_client_pathname: '/create',
         is_max_mode: false,
         create_mode: isCustom ? 'custom' : 'simple',
-        ...(process.env.SUNO_USER_TIER && {
-          user_tier: process.env.SUNO_USER_TIER
-        }),
-        create_session_token: createSessionToken,
+        // user_tier + create_session_token set below (env override) or inside browser
         disable_volume_normalization: false,
         lyrics_model: 'default'
       },
@@ -422,27 +682,93 @@ class SunoApi {
           2
         )
     );
-    let response;
-    try {
-      response = await this.client.post(
-        `${SunoApi.BASE_URL}/api/generate/v2-web/`,
-        payload,
-        { timeout: 10000 }
-      );
-    } catch (err: any) {
-      // Log Suno's structured error (status_code/detail/error_type) so we can
-      // diagnose token_validation_failed / permission_denied / quota issues.
-      const data = err?.response?.data;
-      logger.error(
-        { status: err?.response?.status, suno: data, headers: err?.response?.headers },
-        'generate/v2-web/ failed'
-      );
-      throw err;
+    let responseData: any;
+
+    const turnstileToken = process.env.SUNO_TURNSTILE_TOKEN;
+    const sessionToken = process.env.SUNO_CREATE_SESSION_TOKEN;
+
+    if (turnstileToken && sessionToken) {
+      // --- Primary path: replicate the real web-client request. ---
+      // Suno's generate endpoint requires a Cloudflare Turnstile token (a
+      // `P1_...` string) in `token`, paired with `token_provider: 1`. Sending
+      // `token: null` yields HTTP 422 token_validation_failed. Both this token
+      // and create_session_token are short-lived and captured from the browser.
+      payload.token = turnstileToken;
+      payload.token_provider = 1;
+      payload.metadata.create_session_token = sessionToken;
+      if (process.env.SUNO_USER_TIER) {
+        payload.metadata.user_tier = process.env.SUNO_USER_TIER;
+      }
+      try {
+        const r = await this.client.post(
+          `${SunoApi.BASE_URL}/api/generate/v2-web/`,
+          payload,
+          { timeout: 15_000 }
+        );
+        responseData = r.data;
+        logger.info('generate/v2-web/ succeeded (Turnstile token)');
+      } catch (err: any) {
+        const d = err?.response?.data;
+        const status = err?.response?.status;
+        logger.error(
+          { status, suno: d, headers: err?.response?.headers },
+          'generate/v2-web/ failed'
+        );
+        const detail = d?.detail ?? d?.error ?? JSON.stringify(d);
+        const hint =
+          status === 422
+            ? ' — token_validation_failed: refresh SUNO_TURNSTILE_TOKEN and SUNO_CREATE_SESSION_TOKEN from the browser (the P1_ token is short-lived)'
+            : '';
+        throw new Error(`generate failed (${status}): ${detail}${hint}`);
+      }
+    } else {
+      // --- Fallback: v2/ legacy endpoint (no token required) ---
+      // Used when no Turnstile token is configured. If Suno still accepts it we
+      // avoid all browser overhead; otherwise fall back to the browser.
+      try {
+        const legacyPayload: any = {
+          make_instrumental: make_instrumental,
+          mv: model || DEFAULT_MODEL,
+          generation_type: 'TEXT',
+          token: null,
+          continue_at: continue_at ?? null,
+          continue_clip_id: continue_clip_id ?? null
+        };
+        if (task) legacyPayload.task = task;
+        if (isCustom) {
+          legacyPayload.prompt = prompt;
+          legacyPayload.tags = tags;
+          legacyPayload.title = title;
+          legacyPayload.negative_tags = negative_tags;
+        } else {
+          legacyPayload.prompt = '';
+          legacyPayload.gpt_description_prompt = prompt;
+        }
+        const r = await this.client.post(
+          `${SunoApi.BASE_URL}/api/generate/v2/`,
+          legacyPayload,
+          { timeout: 10_000 }
+        );
+        responseData = r.data;
+        logger.info('generate/v2/ succeeded');
+      } catch (legacyErr: any) {
+        const legacyStatus = legacyErr?.response?.status;
+        const legacyBody = legacyErr?.response?.data;
+        logger.warn(
+          { status: legacyStatus, body: legacyBody },
+          'generate/v2/ failed, falling back to browser'
+        );
+        // Browser-assisted: let Suno's own JS build and send the request.
+        try {
+          responseData = await this.generateViaBrowser(payload);
+        } catch (err: any) {
+          const raw = String(err);
+          logger.error({ error: raw }, 'generateViaBrowser failed');
+          throw new Error(raw);
+        }
+      }
     }
-    if (response.status !== 200) {
-      throw new Error('Error response:' + response.statusText);
-    }
-    const songIds = response.data.clips.map((audio: any) => audio.id);
+    const songIds = responseData.clips.map((audio: any) => audio.id);
     //Want to wait for music file generation
     if (wait_audio) {
       const startTime = Date.now();
@@ -463,7 +789,7 @@ class SunoApi {
       }
       return lastResponse;
     } else {
-      return response.data.clips.map((audio: any) => ({
+      return responseData.clips.map((audio: any) => ({
         id: audio.id,
         title: audio.title,
         image_url: audio.image_url,
@@ -636,11 +962,17 @@ class SunoApi {
 
     const audios = response.data.clips;
 
-    return audios.map((audio: any) => ({
+    return audios.map((audio: any) => this.mapClip(audio));
+  }
+
+  /** Maps a raw Suno clip (feed/v2 or feed/v3 shape) to our AudioInfo. */
+  private mapClip(audio: any): AudioInfo {
+    return {
       id: audio.id,
       title: audio.title,
       image_url: audio.image_url,
-      lyric: audio.metadata.prompt
+      image_large_url: audio.image_large_url,
+      lyric: audio.metadata?.prompt
         ? this.parseLyrics(audio.metadata.prompt)
         : '',
       audio_url: audio.audio_url,
@@ -648,13 +980,59 @@ class SunoApi {
       created_at: audio.created_at,
       model_name: audio.model_name,
       status: audio.status,
-      gpt_description_prompt: audio.metadata.gpt_description_prompt,
-      prompt: audio.metadata.prompt,
-      type: audio.metadata.type,
-      tags: audio.metadata.tags,
-      duration: audio.metadata.duration,
-      error_message: audio.metadata.error_message
-    }));
+      gpt_description_prompt: audio.metadata?.gpt_description_prompt,
+      prompt: audio.metadata?.prompt,
+      type: audio.metadata?.type,
+      tags: audio.metadata?.tags,
+      duration: audio.metadata?.duration,
+      error_message: audio.metadata?.error_message,
+      // feed/v3 exposes these at top level (also present in feed/v2 clips).
+      play_count: audio.play_count,
+      upvote_count: audio.upvote_count,
+      is_liked: audio.is_liked
+    };
+  }
+
+  /**
+   * Loads the user's workspace via Suno's feed/v3 endpoint
+   * (`POST /api/feed/v3`). This mirrors what suno.com's own client sends:
+   * the default workspace filter, plus `filters.searchText` ONLY when a search
+   * term is supplied.
+   *
+   * feed/v3 is cursor-based. The response doesn't return an explicit cursor, so
+   * callers paginate by passing the id of the last clip they received as
+   * `cursor` for the next page.
+   *
+   * @param searchText Optional text to match against song names (server-side).
+   * @param cursor Optional pagination cursor (id of the last clip seen).
+   * @param limit Page size (Suno's web client uses 20).
+   */
+  public async getWorkspaceFeed(
+    searchText?: string,
+    cursor?: string | null,
+    limit: number = 20
+  ): Promise<AudioInfo[]> {
+    await this.keepAlive(false);
+    const url = `${SunoApi.BASE_URL}/api/feed/v3`;
+    const filters: any = {
+      disliked: 'False',
+      trashed: 'False',
+      fromStudioProject: { presence: 'False' },
+      stem: { presence: 'False' },
+      workspace: { presence: 'True', workspaceId: 'default' }
+    };
+    if (searchText && searchText.trim()) {
+      filters.searchText = searchText.trim();
+    }
+    const body = { cursor: cursor ?? null, limit, filters };
+    logger.info(
+      { searchText: searchText ?? null, cursor: cursor ?? null, limit },
+      'Workspace feed/v3'
+    );
+    const response = await this.client.post(url, body, { timeout: 10000 });
+    const data = response.data ?? {};
+    const clips = Array.isArray(data) ? data : data.clips ?? data.items ?? [];
+    return clips.map((audio: any) => this.mapClip(audio));
   }
 
   /**

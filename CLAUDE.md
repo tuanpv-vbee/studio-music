@@ -39,8 +39,13 @@ As of 2026-05 Suno's web client requires several anti-bot identifiers on every g
 - `device-id` header — a UUID. Wrapper sources it from `SUNO_DEVICE_ID` env, falling back to the `ajs_anonymous_id` cookie, then a random UUID.
 - `browser-token` header — `{"token": "<base64({\"timestamp\": Date.now()})>"}`. Wrapper recomputes this on every request via an axios request interceptor (see `SunoApi.ts` constructor).
 - `metadata.user_tier` and `metadata.create_session_token` in the `POST /api/generate/v2-web/` body — both are UUIDs. `user_tier` is per-account and stable; `create_session_token` is short-lived and currently must be supplied via env (`SUNO_USER_TIER`, `SUNO_CREATE_SESSION_TOKEN`). When generate starts returning `token_validation_failed` (HTTP 422), this token has expired and must be re-captured from the browser.
+- `token` (body) — a **Cloudflare Turnstile** token, a `P1_...` string, paired with `token_provider: 1`. Sending `"token": null` yields HTTP 422 `token_validation_failed`. Supplied via env (`SUNO_TURNSTILE_TOKEN`); short-lived, re-capture from the browser when 422.
 
-hCaptcha is **no longer used** for the generate flow (Suno removed it). The payload sends `"token": null`. If Suno re-enables it, the captcha-solving code (2Captcha + Playwright) was deleted in this refactor — it will need to be reintroduced.
+### Generate request paths (in `generateSongs`)
+1. **Primary** — if `SUNO_TURNSTILE_TOKEN` **and** `SUNO_CREATE_SESSION_TOKEN` are set, POST directly to `/api/generate/v2-web/` with the real `token`/`token_provider`/`create_session_token`/`user_tier`. This replicates the captured web-client request; no browser needed.
+2. **Fallback** — otherwise try legacy `/api/generate/v2/` (no token), then fall back to `generateViaBrowser()` (headless Playwright driving `suno.com/create`).
+
+hCaptcha is no longer used (Suno replaced it with Turnstile). If the Turnstile flow changes again, the 2Captcha + Playwright captcha-solving code was deleted in an earlier refactor and would need reintroducing.
 
 ### Why this breaks
 Hardcoded values that must be updated when Suno changes things: `SunoApi.CLERK_VERSION`, `BASE_URL` (`studio-api-prod.suno.com`), `CLERK_BASE_URL`, the `sec-ch-ua` header set, the generate endpoint path (`/api/generate/v2-web/`), and `DEFAULT_MODEL` (currently `chirp-auk-turbo`). Auth failures usually mean the cookie expired or the Clerk version/endpoint changed. `token_validation_failed` usually means `SUNO_CREATE_SESSION_TOKEN` has expired.
@@ -52,6 +57,7 @@ Hardcoded values that must be updated when Suno changes things: `SunoApi.CLERK_V
    - `SUNO_DEVICE_ID` = `device-id` request header.
    - `SUNO_USER_TIER` = `metadata.user_tier` from the JSON body.
    - `SUNO_CREATE_SESSION_TOKEN` = `metadata.create_session_token` from the JSON body.
+   - `SUNO_TURNSTILE_TOKEN` = the top-level `token` (`P1_...`) from the JSON body.
 4. Also re-copy `SUNO_COOKIE` from the same session (must contain `__client`).
 
 ## Environment variables
@@ -62,6 +68,7 @@ Set in `.env` (see `.env.example`).
 - `SUNO_DEVICE_ID` — `device-id` header value (UUID). Optional but recommended; falls back to cookie's `ajs_anonymous_id`.
 - `SUNO_USER_TIER` — `metadata.user_tier` UUID from a generate request body.
 - `SUNO_CREATE_SESSION_TOKEN` — `metadata.create_session_token` UUID from a generate request body. Short-lived; refresh when 422.
+- `SUNO_TURNSTILE_TOKEN` — top-level `token` (`P1_...` Cloudflare Turnstile string) from a generate request body. Sent with `token_provider: 1`. Short-lived; refresh when 422. With this + `SUNO_CREATE_SESSION_TOKEN` set, generate skips the headless browser.
 
 ## Conventions
 

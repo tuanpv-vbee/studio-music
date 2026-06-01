@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { usePlayer } from './PlayerContext';
 import SongActions from './SongActions';
 import SongCover from './SongCover';
@@ -34,7 +35,13 @@ export default function SongItem({ song }: Props) {
         playing={playing}
         onPlayToggle={() => ready && toggle(song)}
       />
-      <SongMeta song={song} className="flex-1" />
+      <Link
+        href={`/song/${song.id}`}
+        className="flex-1 min-w-0 group/meta"
+        title="View song details"
+      >
+        <SongMeta song={song} />
+      </Link>
       <SongActions song={song} />
 
       {!ready && song.status === 'error' && song.error_message && (

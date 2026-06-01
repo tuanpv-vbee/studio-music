@@ -6,8 +6,9 @@ import Logo from "./Logo";
 
 export default function Header() {
     const pathname = usePathname();
-    // Suno-style /create has its own sidebar layout — hide the global nav there.
-    if (pathname?.startsWith("/create")) return null;
+    // Suno-style /create and /song have their own sidebar layout — hide the
+    // global nav there.
+    if (pathname?.startsWith("/create") || pathname?.startsWith("/song")) return null;
     return (
         <nav className=" flex w-full justify-center py-4 items-center
         border-b border-gray-300  backdrop-blur-2xl font-mono text-sm px-4 lg:px-0">

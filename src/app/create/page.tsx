@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import ClipCard from '@/components/ClipCard';
 import SongDescriptionCustom from '@/features/create/SongDescriptionCustom';
 import SongDescriptionSimple from '@/features/create/SongDescriptionSimple';
 import { CreateProvider, useCreate } from '@/features/create/CreateContext';
@@ -21,10 +20,23 @@ export default function CreatePage() {
 }
 
 function CreateContent() {
-  const { mode, setMode, clips, phase, error } = useCreate();
+  const { mode, setMode, clips, phase, error, songCount } = useCreate();
 
   const busy = phase === 'submitting' || phase === 'polling';
   const workspaceRef = useRef<WorkspaceHandle>(null);
+
+  // In-flight generations shown as skeleton cards at the top of the workspace.
+  // While submitting we don't have clip ids yet, so synthesize placeholders;
+  // once polling, use the real clips so their status/title can surface.
+  const pendingClips =
+    phase === 'polling'
+      ? clips
+      : phase === 'submitting'
+        ? Array.from({ length: songCount }, (_, i) => ({
+            id: `pending-${i}`,
+            status: 'submitting',
+          }))
+        : [];
 
   // When a generation finishes, refresh the workspace so the new song appears.
   useEffect(() => {
@@ -72,23 +84,10 @@ function CreateContent() {
         )}
       </aside>
 
-      {/* RIGHT — workspace + live in-flight clips. */}
+      {/* RIGHT — workspace. In-flight generations appear as skeleton cards at
+          the top of the list (no separate "in progress" section). */}
       <section className="flex-1 min-w-0 space-y-6">
-        {busy && clips.length > 0 && (
-          <div className="bg-neutral-950 border border-neutral-800 rounded-2xl p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-medium text-neutral-400 uppercase tracking-widest">
-                In progress
-              </span>
-              <span className="text-[10px] text-neutral-600">auto-refreshes every 5s</span>
-            </div>
-            {clips.map((clip) => (
-              <ClipCard key={clip.id} clip={clip} />
-            ))}
-          </div>
-        )}
-
-        <Workspace ref={workspaceRef} />
+        <Workspace ref={workspaceRef} pendingClips={pendingClips} />
       </section>
     </main>
   );
