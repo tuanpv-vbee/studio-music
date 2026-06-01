@@ -8,9 +8,9 @@ import { Analytics } from "@vercel/analytics/react"
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "suno api",
-  description: "Use API to call the music generation ai of suno.ai",
-  keywords: ["suno", "suno api", "suno.ai", "api", "music", "generation", "ai"],
+  title: "Melos AI",
+  description: "Melos AI — create music with AI.",
+  keywords: ["melos", "melos ai", "music", "generation", "ai"],
   creator: "@gcui.ai",
 };
 

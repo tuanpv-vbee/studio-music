@@ -14,7 +14,7 @@ export default function Sidebar() {
     <aside className="hidden md:flex md:w-60 shrink-0 flex-col bg-neutral-950 border-r border-neutral-800 h-screen sticky top-0">
       <div className="px-5 pt-5 pb-7 flex items-center gap-2">
         <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-fuchsia-500 to-indigo-600" />
-        <span className="font-semibold tracking-wide">Suno API</span>
+        <span className="font-semibold tracking-wide">Melos AI</span>
       </div>
 
       <nav className="flex flex-col gap-1 px-3">
